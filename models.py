@@ -32,6 +32,12 @@ class BacktestRequest(BaseModel):
         gt=0,
         description="Gap between market price and PE/CE strike prices",
     )
+    profit_target: float = Field(
+        default=0.10,
+        ge=0.01,
+        le=1.0,
+        description="Profit target as percentage of strike offset (e.g. 0.10 for 10%)",
+    )
 
 
 # --- Response Models ---
@@ -97,5 +103,6 @@ class BacktestResponse(BaseModel):
     to_date: date
     expiry_months: int
     strike_offset: float
+    profit_target: float
     total_pnl: float = Field(..., description="Sum of all P&L across the backtest")
     rows: List[BacktestRow]

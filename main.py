@@ -90,6 +90,7 @@ def post_backtest(req: BacktestRequest):
         prices,
         expiry_months=req.expiry_months,
         strike_offset=req.strike_offset,
+        profit_target=req.profit_target,
     )
 
     return BacktestResponse(
@@ -98,6 +99,7 @@ def post_backtest(req: BacktestRequest):
         to_date=req.to_date,
         expiry_months=req.expiry_months,
         strike_offset=req.strike_offset,
+        profit_target=req.profit_target,
         total_pnl=total_pnl,
         rows=rows,
     )

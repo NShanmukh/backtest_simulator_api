@@ -47,6 +47,11 @@ class Position:
 # Helper utilities
 # ---------------------------------------------------------------------------
 
+def _is_monday(current: date) -> bool:
+    """Return True if *current* is a Monday."""
+    return current.weekday() == 0
+
+
 def _is_start_of_week(current: date, previous: Optional[date]) -> bool:
     """
     Return True if *current* is a Monday, OR if it is the first trading day
@@ -92,6 +97,7 @@ def run_backtest(
     prices: pd.Series,
     expiry_months: int = 3,
     strike_offset: float = 5.0,
+    profit_target: float = 0.10,
 ) -> Tuple[List[BacktestRow], float]:
     """
     Execute the backtesting simulation over the provided price series.
@@ -104,6 +110,9 @@ def run_backtest(
         Months until each new position expires (default 3).
     strike_offset : float
         Distance from market price for PE/CE strikes (default 5).
+    profit_target : float
+        Profit target as a percentage of strike_offset (default 0.10 = 10%).
+        Positions exit when profit reaches this target.
 
     Returns
     -------
@@ -128,61 +137,102 @@ def run_backtest(
         new_pe_strike: Optional[float] = None
         new_ce_strike: Optional[float] = None
 
-        # --- 1. Rolling logic: check every open position ---
-        new_positions_from_rolls: List[Position] = []
+        # --- 1. Profit target & rolling logic: check every open position ---
+        # First, close positions that hit their profit target
         for pos in positions:
             if pos.status != "open":
                 continue
 
-            rolled = False
-            if pos.type == "PE" and price < pos.strike:
-                # Market dropped below PE strike → roll the PE
+            # For both PE and CE sells, we profit when market stays favorable
+            # PE: profitable when market < strike
+            # CE: profitable when market < strike  
+            # Profit target: intrinsic value = strike_offset * profit_target
+            # Close when: market <= strike - (strike_offset * profit_target)
+            
+            if pos.type == "PE" and price <= pos.strike - (strike_offset * profit_target):
+                # PE profit target hit
                 pnl = _calc_pe_pnl(pos.strike, price)
-                day_rolled.append(
-                    RolledPosition(
+                day_closed.append(
+                    ClosedPosition(
                         type="PE",
-                        old_strike=round(pos.strike, 4),
-                        new_strike=round(price - strike_offset, 4),
+                        strike=round(pos.strike, 4),
+                        entry_date=pos.entry_date,
                         pnl=round(pnl, 4),
                     )
                 )
                 day_pnl += pnl
-                pos.status = "rolled"
-                # Open replacement PE at new strike, same expiry
-                new_positions_from_rolls.append(
-                    Position(
-                        type="PE",
-                        strike=round(price - strike_offset, 4),
-                        entry_date=day,
-                        expiry_date=pos.expiry_date,
-                        entry_price=price,
-                    )
-                )
-                rolled = True
+                pos.status = "closed"
 
-            if not rolled and pos.type == "CE" and price > pos.strike:
-                # Market rose above CE strike → roll the CE
+            elif pos.type == "CE" and price <= pos.strike - (strike_offset * profit_target):
+                # CE profit target hit
                 pnl = _calc_ce_pnl(pos.strike, price)
-                day_rolled.append(
-                    RolledPosition(
+                day_closed.append(
+                    ClosedPosition(
                         type="CE",
-                        old_strike=round(pos.strike, 4),
-                        new_strike=round(price + strike_offset, 4),
+                        strike=round(pos.strike, 4),
+                        entry_date=pos.entry_date,
                         pnl=round(pnl, 4),
                     )
                 )
                 day_pnl += pnl
-                pos.status = "rolled"
-                # Open replacement CE at new strike, same expiry
-                new_positions_from_rolls.append(
-                    Position(
-                        type="CE",
-                        strike=round(price + strike_offset, 4),
-                        entry_date=day,
-                        expiry_date=pos.expiry_date,
-                        entry_price=price,
+                pos.status = "closed"
+
+        # Rolling logic: only on Mondays, check if positions should be rolled
+        new_positions_from_rolls: List[Position] = []
+        if _is_monday(day):
+            for pos in positions:
+                if pos.status != "open":
+                    continue
+
+                rolled = False
+                if pos.type == "PE" and price < pos.strike:
+                    # Market dropped below PE strike → roll the PE
+                    pnl = _calc_pe_pnl(pos.strike, price)
+                    day_rolled.append(
+                        RolledPosition(
+                            type="PE",
+                            old_strike=round(pos.strike, 4),
+                            new_strike=round(price - strike_offset, 4),
+                            pnl=round(pnl, 4),
+                        )
                     )
-                )
+                    day_pnl += pnl
+                    pos.status = "rolled"
+                    # Open replacement PE at new strike, same expiry
+                    new_positions_from_rolls.append(
+                        Position(
+                            type="PE",
+                            strike=round(price - strike_offset, 4),
+                            entry_date=day,
+                            expiry_date=pos.expiry_date,
+                            entry_price=price,
+                        )
+                    )
+                    rolled = True
+
+                if not rolled and pos.type == "CE" and price > pos.strike:
+                    # Market rose above CE strike → roll the CE
+                    pnl = _calc_ce_pnl(pos.strike, price)
+                    day_rolled.append(
+                        RolledPosition(
+                            type="CE",
+                            old_strike=round(pos.strike, 4),
+                            new_strike=round(price + strike_offset, 4),
+                            pnl=round(pnl, 4),
+                        )
+                    )
+                    day_pnl += pnl
+                    pos.status = "rolled"
+                    # Open replacement CE at new strike, same expiry
+                    new_positions_from_rolls.append(
+                        Position(
+                            type="CE",
+                            strike=round(price + strike_offset, 4),
+                            entry_date=day,
+                            expiry_date=pos.expiry_date,
+                            entry_price=price,
+                        )
+                    )
 
         # Add rolled-replacement positions to the book
         positions.extend(new_positions_from_rolls)
